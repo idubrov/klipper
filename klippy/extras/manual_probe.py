@@ -30,6 +30,8 @@ class ManualProbe:
         self.c_position_endstop = c_tower_config.getfloat('position_endstop',
                                                           None,
                                                           note_valid=False)
+        # If should update max position
+        self.max_position_endstop_offset = config.getfloat('max_position_endstop_offset', None)
         # Conditionally register appropriate commands depending on printer
         # Cartestian printers with separate Z Axis
         if self.z_position_endstop is not None:
@@ -72,6 +74,9 @@ class ManualProbe:
             "with the above and restart the printer." % (z_pos,))
         configfile = self.printer.lookup_object('configfile')
         configfile.set('stepper_z', 'position_endstop', "%.3f" % (z_pos,))
+        if self.max_position_endstop_offset is not None:
+            configfile.set('stepper_z', 'position_max',
+            "%.3f" % (z_pos + self.max_position_endstop_offset,))
     cmd_Z_ENDSTOP_CALIBRATE_help = "Calibrate a Z endstop"
     def cmd_Z_ENDSTOP_CALIBRATE(self, gcmd):
         ManualProbeHelper(self.printer, gcmd, self.z_endstop_finalize)
@@ -88,6 +93,9 @@ class ManualProbe:
                 "with the above and restart the printer." % (new_calibrate))
             configfile.set('stepper_z', 'position_endstop',
                 "%.3f" % (new_calibrate,))
+            if self.max_position_endstop_offset is not None:
+                configfile.set('stepper_z', 'position_max',
+                "%.3f" % (new_calibrate + self.max_position_endstop_offset,))
     def cmd_Z_OFFSET_APPLY_DELTA_ENDSTOPS(self,gcmd):
         offset = self.gcode_move.get_status()['homing_origin'].z
         configfile = self.printer.lookup_object('configfile')

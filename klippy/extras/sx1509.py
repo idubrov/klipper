@@ -15,6 +15,9 @@ REG_DATA = 0x10
 REG_PULLUP = 0x06
 REG_PULLDOWN = 0x08
 REG_INPUT_DISABLE = 0x00
+REG_INTERRUPT_MASK = 0x12
+REG_SENSE_B = 0x14
+REG_SENSE_A = 0x16
 REG_ANALOG_DRIVER_ENABLE = 0x20
 
 
@@ -24,6 +27,7 @@ REG_I_ON = [0x2A, 0x2D, 0x30, 0x33, 0x36, 0x3B, 0x40, 0x45,
 class SX1509(object):
     def __init__(self, config):
         self._printer = config.get_printer()
+        self._reactor = self._printer.get_reactor()
         self._name = config.get_name().split()[1]
         self._i2c = bus.MCU_I2C_from_config(config, default_speed=400000)
         self._ppins = self._printer.lookup_object("pins")
@@ -32,10 +36,24 @@ class SX1509(object):
         self._mcu.register_config_callback(self._build_config)
         self._oid = self._i2c.get_oid()
         self._last_clock = 0
+
+        # Interrupt pin triggers button events
+        interrupt_pin = config.get('interrupt_pin', None)
+        if interrupt_pin is not None:
+            buttons = self._printer.load_object(config, 'buttons')
+            buttons.register_buttons([interrupt_pin], self._button_handler)
+
+        # Input pins support
+        self._pin_list = []
+        self._last_button = 0
+        self._invert = 0
+        self._callbacks = []
         # Set up registers default values
         self.reg_dict = {REG_DIR : 0xFFFF, REG_DATA : 0,
                          REG_PULLUP : 0, REG_PULLDOWN : 0,
-                         REG_INPUT_DISABLE : 0, REG_ANALOG_DRIVER_ENABLE : 0}
+                         REG_INPUT_DISABLE : 0, REG_INTERRUPT_MASK : 0xFFFF,
+                         REG_SENSE_B : 0, REG_SENSE_A : 0,
+                         REG_ANALOG_DRIVER_ENABLE : 0}
         self.reg_i_on_dict = {reg : 0 for reg in REG_I_ON}
     def _build_config(self):
         # Reset the chip
@@ -64,6 +82,31 @@ class SX1509(object):
             pin_params['pin'][0:4], pin_type))
     def get_mcu(self):
         return self._mcu
+    def get_constants(self):
+        return {"MCU": "sx1509"}
+    def setup_buttons(self, pins, callback):
+        mask = 0
+        shift = len(self._pin_list)
+        for pin_params in pins:
+            if pin_params['invert']:
+                self._invert |= 1 << len(self._pin_list)
+            mask |= 1 << len(self._pin_list)
+            if pin_params['pin'][0:4] != "PIN_":
+                raise pins.error("Wrong pin: %s!" % (pin_params['pin'][0:4]))
+            pin_idx = int(pin_params['pin'][4:])
+            self._pin_list.append(pin_idx)
+            if pin_params['pullup'] == 1:
+                self.set_bits_in_register(REG_PULLUP, 1 << pin_idx)
+                self.clear_bits_in_register(REG_PULLDOWN, 1 << pin_idx)
+            elif pin_params['pullup'] == -1:
+                self.set_bits_in_register(REG_PULLDOWN, 1 << pin_idx)
+                self.clear_bits_in_register(REG_PULLUP, 1 << pin_idx)
+            self.clear_bits_in_register(REG_INTERRUPT_MASK, 1 << pin_idx)
+            if pin_idx < 8:
+                self.set_bits_in_register(REG_SENSE_A, 3 << (pin_idx * 2))
+            else:
+                self.set_bits_in_register(REG_SENSE_B, 3 << ((pin_idx - 8) * 2))
+        self._callbacks.append((mask, shift, callback))
     def get_oid(self):
         return self._oid
     def clear_bits_in_register(self, reg, bitmask):
@@ -93,6 +136,27 @@ class SX1509(object):
         clock = self._mcu.print_time_to_clock(print_time)
         self._i2c.i2c_write(data, minclock=self._last_clock, reqclock=clock)
         self._last_clock = clock
+    def _button_handler(self, eventtime, state):
+        # Only handle interrupt triggering
+        if not state:
+            return
+        params = self._i2c.i2c_read([REG_DATA], 2)
+        response = bytearray(params['response'])
+        state = (response[0] << 8) | response[1]
+        # Remap into the button state based on the pins index list.
+        button = 0
+        for idx, pin_idx in enumerate(self._pin_list):
+            button |= ((state >> pin_idx) & 1) << idx
+
+        # Invoke callbacks with this event in main thread
+        button ^= self._invert
+        changed = button ^ self._last_button
+        self._last_button = button
+        for mask, shift, callback in self._callbacks:
+            if changed & mask:
+                state = (button & mask) >> shift
+                self._reactor.register_async_callback(
+                    (lambda et, c=callback, bt=eventtime, s=state: c(bt, s)))
 
 class SX1509_digital_out(object):
     def __init__(self, sx1509, pin_params):

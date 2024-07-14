@@ -279,11 +279,16 @@ class PrinterButtons:
             mcu_name = pin_params['chip_name']
             pin_params_list.append(pin_params)
         # Register pins and callback with the appropriate MCU
-        mcu_buttons = self.mcu_buttons.get(mcu_name)
-        if (mcu_buttons is None
-            or len(mcu_buttons.pin_list) + len(pin_params_list) > 8):
-            self.mcu_buttons[mcu_name] = mcu_buttons = MCU_buttons(
-                self.printer, mcu)
+        mcu_type = mcu.get_constants().get("MCU", "")
+        if mcu_type == "sx1509":
+            # SX1509 itself handles the buttons
+            mcu_buttons = mcu
+        else:
+            mcu_buttons = self.mcu_buttons.get(mcu_name)
+            if (mcu_buttons is None
+                or len(mcu_buttons.pin_list) + len(pin_params_list) > 8):
+                self.mcu_buttons[mcu_name] = mcu_buttons = MCU_buttons(
+                    self.printer, mcu)
         mcu_buttons.setup_buttons(pin_params_list, callback)
     def register_rotary_encoder(self, pin1, pin2, cw_callback, ccw_callback,
                                 steps_per_detent):
